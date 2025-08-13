@@ -12,12 +12,7 @@ from openai import OpenAI
 # Load .env for local testing
 load_dotenv()
 
-# Get OpenAI API key from env
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    raise RuntimeError("OPENAI_API_KEY not set in environment")
-
-client = OpenAI(api_key=api_key)
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 def process_request(files: List[UploadFile], qtext: Optional[str] = None):
     """
