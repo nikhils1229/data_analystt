@@ -1,4 +1,3 @@
-
 import json
 import re
 from .utils import find_urls, fetch_url_text, read_html_tables, make_scatter_with_regression
