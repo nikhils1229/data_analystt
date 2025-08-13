@@ -8,7 +8,6 @@ from typing import List, Optional
 from fastapi import UploadFile
 from dotenv import load_dotenv
 from openai import OpenAI
-import numpy as np
 
 # Load .env for local testing
 load_dotenv()
@@ -17,12 +16,13 @@ load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
     raise RuntimeError("OPENAI_API_KEY not set in environment")
+
 client = OpenAI(api_key=api_key)
 
 def process_request(files: List[UploadFile], qtext: Optional[str] = None):
     """
-    Process uploaded files + optional text questions.
-    Always returns valid JSON string (list or dict).
+    Process uploaded files + optional qtext.
+    Always returns a valid JSON array or object.
     """
 
     questions = None
@@ -38,9 +38,12 @@ def process_request(files: List[UploadFile], qtext: Optional[str] = None):
             df = pd.read_csv(io.BytesIO(content))
             csv_dataframes.append(df)
         else:
-            other_files_content[file.filename] = content.decode("utf-8", errors="ignore")
+            try:
+                other_files_content[file.filename] = content.decode("utf-8")
+            except:
+                pass
 
-    # If qtext is given, append it
+    # Append qtext if given
     if qtext:
         if questions:
             questions += "\n" + qtext
@@ -50,14 +53,13 @@ def process_request(files: List[UploadFile], qtext: Optional[str] = None):
     if not questions:
         raise ValueError("No questions provided")
 
-    # Prepare data summary for the LLM
+    # Prepare data summary for LLM
     data_summary = ""
     for i, df in enumerate(csv_dataframes):
         data_summary += f"\nCSV File {i+1} (first 5 rows):\n{df.head().to_csv(index=False)}"
 
-    # Compose prompt for OpenAI
     prompt = f"""
-You are a data analyst. 
+You are a data analyst.
 The user provided the following questions:
 
 {questions}
@@ -79,15 +81,10 @@ If plotting is requested, return the plot as base64-encoded string in place of t
 
         raw_output = response.choices[0].message.content.strip()
 
-        # Ensure output is valid JSON
         try:
-            parsed = json.loads(raw_output)
+            return json.loads(raw_output)
         except json.JSONDecodeError:
-            # Try to fix JSON by wrapping in array
-            parsed = [raw_output]
-
-        return parsed
-    except Exception as e:
-        # On failure, return placeholders matching number of questions
+            return [raw_output]
+    except Exception:
         q_count = len([q for q in questions.split("\n") if q.strip()])
         return ["" for _ in range(q_count)]
