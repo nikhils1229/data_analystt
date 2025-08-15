@@ -1,5 +1,6 @@
 fastapi==0.95.2
 uvicorn[standard]==0.22.0
+networkx
 pandas==2.2.2
 duckdb==0.7.1
 requests==2.31.0
