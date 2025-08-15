@@ -2,69 +2,99 @@
 
 from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.responses import JSONResponse
-from typing import List
-from .processor import process_question
+from pydantic import BaseModel
+from typing import List, Optional
 import uvicorn
 import base64
 import io
+from .processor import process_question
 
 app = FastAPI()
+
+class QuestionRequest(BaseModel):
+    question: str
+    files: Optional[List[dict]] = None
 
 @app.post("/api/")
 async def analyze(request: Request):
     """
     Analyzes a user's question about provided data files.
-
-    This endpoint can handle both `multipart/form-data` and `application/json`
-    requests. It extracts the question and any associated files, then
-    delegates processing to the `process_question` function.
+    This endpoint handles both JSON requests and form-data requests.
     """
     question = None
     files = []
-    
-    # Check the content type to handle JSON or form-data
-    content_type = request.headers.get("content-type", "")
 
     try:
+        content_type = request.headers.get("content-type", "")
+
         if "application/json" in content_type:
             # Handle JSON payload
             data = await request.json()
-            question = data.get("question") or (data.get("vars", {})).get("question")
-            
-            # Handle base64 encoded files embedded in JSON
+            question = data.get("question")
+
+            # Also check nested structure that might be used by test framework
+            if not question:
+                vars_data = data.get("vars", {})
+                question = vars_data.get("question")
+
+            # Handle base64 encoded files in JSON
             if "files" in data and isinstance(data["files"], list):
                 for f in data["files"]:
                     if "filename" in f and "content" in f:
-                        decoded_content = base64.b64decode(f["content"])
-                        file_obj = io.BytesIO(decoded_content)
-                        files.append(UploadFile(filename=f["filename"], file=file_obj))
+                        try:
+                            decoded_content = base64.b64decode(f["content"])
+                            file_obj = io.BytesIO(decoded_content)
+                            # Create a simple file-like object
+                            class SimpleFile:
+                                def __init__(self, filename, file_obj):
+                                    self.filename = filename
+                                    self.file = file_obj
+                            files.append(SimpleFile(f["filename"], file_obj))
+                        except Exception as e:
+                            print(f"Error decoding file {f.get('filename', 'unknown')}: {e}")
 
         elif "multipart/form-data" in content_type:
             # Handle multipart form data
             form_data = await request.form()
             question = form_data.get("question")
-            # The 'files' key in a form can have multiple parts
+
+            # Handle uploaded files
             form_files = form_data.getlist("files")
             if form_files:
-                files.extend(form_files)
-        
-        # Fallback for question in query parameters
+                for f in form_files:
+                    if hasattr(f, 'filename') and hasattr(f, 'file'):
+                        files.append(f)
+
+        # Also check query parameters as fallback
         if not question:
             question = request.query_params.get("question")
 
-        if not question:
+        # Handle the case where question might be empty string from request body
+        if not question or question.strip() == "":
             return JSONResponse(
-                content={"error": "Missing required field: question"},
+                content={"error": "Missing required field: question"}, 
                 status_code=400
             )
 
-        # Call the processor with the extracted data
+        # Process the question
         result = process_question(question, files)
-        return JSONResponse(content=result)
+
+        # Ensure result is JSON serializable
+        if isinstance(result, dict):
+            return JSONResponse(content=result)
+        else:
+            return JSONResponse(content={"error": "Invalid response format from processor"})
 
     except Exception as e:
-        # Generic error handler for unexpected issues
-        return JSONResponse(content={"error": f"An unexpected error occurred: {str(e)}"}, status_code=500)
+        print(f"API Error: {str(e)}")
+        return JSONResponse(
+            content={"error": f"An unexpected error occurred: {str(e)}"}, 
+            status_code=500
+        )
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
 
 if __name__ == "__main__":
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
