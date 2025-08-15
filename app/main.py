@@ -1,18 +1,17 @@
 from fastapi import FastAPI, UploadFile, Form
 from fastapi.responses import JSONResponse
-from .processor import process_question
+from .processor import process_question  # relative import for Railway
 import uvicorn
 
 app = FastAPI()
 
 @app.post("/api/")
-async def analyze_data(files: list[UploadFile], question: str = Form(...)):
+async def analyze(question: str = Form(...), files: list[UploadFile] = []):
     try:
-        result_json = process_question(files, question)
-        return JSONResponse(content=result_json)
+        result = process_question(question, files)
+        return JSONResponse(content=result)
     except Exception as e:
-        # Always return something to avoid zero marks
-        return JSONResponse(content={"error": str(e)}, status_code=400)
+        return JSONResponse(content={"error": str(e)}, status_code=500)
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
