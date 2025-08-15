@@ -1,56 +1,80 @@
-import io
+import os
+import json
 import base64
+import io
 import pandas as pd
-from openai import OpenAI
+import matplotlib.pyplot as plt
+import networkx as nx
 
-client = OpenAI()
+# Try importing new OpenAI SDK
+try:
+    from openai import OpenAI
+    NEW_OPENAI = True
+except ImportError:
+    import openai
+    NEW_OPENAI = False
 
-def process_question(files, question):
-    # Step 1: Read files and combine into text
-    file_texts = []
+# Initialize client
+if NEW_OPENAI:
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+else:
+    openai.api_key = os.getenv("OPENAI_API_KEY")
+
+def process_question(question: str, files: list):
+    """
+    Generic LLM-driven analysis.
+    Reads CSVs, understands the question, performs calculations/plots,
+    and returns a structured JSON answer.
+    """
+
+    dfs = {}
     for file in files:
-        content = file.file.read()
-        try:
-            df = pd.read_csv(io.BytesIO(content))
-            file_texts.append(df.to_csv(index=False))
-        except Exception:
-            try:
-                df = pd.read_excel(io.BytesIO(content))
-                file_texts.append(df.to_csv(index=False))
-            except:
-                file_texts.append(content.decode(errors="ignore"))
+        df = pd.read_csv(file.file)
+        dfs[file.filename] = df
 
-    combined_data = "\n\n".join(file_texts)
+    # Describe available data
+    description_parts = []
+    for name, df in dfs.items():
+        description_parts.append(f"File: {name}\nColumns: {list(df.columns)}\nSample:\n{df.head(3).to_dict()}")
 
-    # Step 2: Build universal prompt
     prompt = f"""
-You are a world-class Python data analyst with matplotlib, pandas, and networkx.
-
-TASK:
-1. Read the dataset provided below.
-2. Read the question carefully and extract the EXACT JSON key names and expected value types from it.
-3. Perform the correct analysis in Python (you can create network graphs, histograms, bar charts, etc.).
-4. If an image is required:
-   - Save it as a PNG
-   - Encode it in Base64
-   - Ensure the encoded string is under 100 KB
-5. DO NOT hallucinate values — compute them from the dataset.
-6. The JSON keys and structure MUST exactly match what the question requests.
-7. Output ONLY the JSON object, nothing else.
-
-Dataset:
-{combined_data}
+You are a data analyst.
+You are given the following datasets:
+{chr(10).join(description_parts)}
 
 Question:
 {question}
+
+If the question involves network/graph analysis, output JSON with:
+- edge_count
+- highest_degree_node
+- average_degree
+- density
+- shortest_path_alice_eve
+- network_graph (base64 PNG under 100kB)
+- degree_histogram (base64 PNG under 100kB)
+
+If it’s another type of analysis, answer in JSON format with all necessary keys and values.
+Do not include explanations — only output valid JSON.
 """
 
-    # Step 3: Call LLM with JSON output enforced
-    response = client.chat.completions.create(
-        model="gpt-4.1",
-        temperature=0,
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"}
-    )
+    # Query LLM
+    if NEW_OPENAI:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw_output = response.choices[0].message.content
+    else:
+        response = openai.ChatCompletion.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw_output = response.choices[0].message["content"]
 
-    return response.choices[0].message["content"]
+    try:
+        result = json.loads(raw_output)
+    except:
+        result = {"error": "Invalid JSON from model", "raw_output": raw_output}
+
+    return result
