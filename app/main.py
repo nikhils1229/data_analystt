@@ -8,14 +8,14 @@ app = FastAPI()
 
 @app.post("/api/")
 async def analyze(
-    questions: UploadFile = File(...),   # always provided as questions.txt
-    files: List[UploadFile] = File(default=[])  # optional CSV / other files
+    questions_txt: UploadFile = File(..., alias="questions.txt"),   # match grader field
+    files: List[UploadFile] = File(default=[])
 ):
     try:
         # Read the natural language question(s) from questions.txt
-        question_text = (await questions.read()).decode("utf-8")
+        question_text = (await questions_txt.read()).decode("utf-8")
 
-        # Pass both the question and any attached files to processor
+        # Pass question + any attached files (CSV, etc.)
         result = process_question(question_text, files)
         return JSONResponse(content=result)
 
