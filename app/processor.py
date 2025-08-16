@@ -134,10 +134,6 @@ def process_question(question: str, files: list):
 
 
 def call_llm_for_answer(data_description, question, force_array=False):
-    """
-    Calls OpenAI LLM to answer the question in strict JSON format.
-    - If force_array=True, ensures output is a JSON array of strings.
-    """
     if force_array:
         prompt = f"""
 You are a data analyst. You have the following data:
@@ -174,7 +170,17 @@ Do not include explanations or extra fields.
         )
         raw_output = response.choices[0].message["content"]
 
+    # --- CLEANUP: strip Markdown fences if present ---
+    cleaned = raw_output.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")  # remove leading/trailing ```
+        # remove possible "json\n" or "JSON\n"
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:].strip()
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3].strip()
+
     try:
-        return json.loads(raw_output)
+        return json.loads(cleaned)
     except Exception:
         return {"error": "Invalid JSON from model", "raw_output": raw_output}
