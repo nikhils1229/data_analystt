@@ -1,186 +1,97 @@
 import os
-import json
-import base64
 import io
+import base64
 import pandas as pd
 import matplotlib.pyplot as plt
-import networkx as nx
-import requests
-from bs4 import BeautifulSoup
-import duckdb
+from openai import OpenAI
 
-# OpenAI client (works with both old and new SDKs)
-try:
-    from openai import OpenAI
-    NEW_OPENAI = True
-except ImportError:
-    import openai
-    NEW_OPENAI = False
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-if NEW_OPENAI:
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-else:
-    openai.api_key = os.getenv("OPENAI_API_KEY")
+def encode_chart():
+    """Helper to capture current matplotlib figure as base64 PNG."""
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+    plt.close()
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
-
-def encode_plot(fig, format="png", max_size=100_000, min_dpi=50):
+def analyze_csv_generic(csv_file: str, questions: str):
     """
-    Encode a matplotlib figure to base64 under max_size bytes.
-    Will progressively lower DPI until size requirement is met.
+    Generic CSV analyzer that:
+    1. Computes numeric + categorical summaries.
+    2. Builds automatic visualizations.
+    3. Uses OpenAI to answer custom questions.
     """
-    dpi = 150
-    while dpi >= min_dpi:
-        buf = io.BytesIO()
-        fig.savefig(buf, format=format, bbox_inches="tight", dpi=dpi)
-        buf.seek(0)
-        b64 = base64.b64encode(buf.read()).decode("utf-8")
-        if len(b64.encode("utf-8")) <= max_size * 1.37:  # ~1.37x expansion in base64
-            plt.close(fig)
-            return f"data:image/{format};base64,{b64}"
-        dpi -= 10
-    plt.close(fig)
-    return f"data:image/{format};base64,{b64}"
+    df = pd.read_csv(csv_file)
 
+    results = {}
 
-def process_question(question: str, files: list):
-    """
-    Main entry point. Handles:
-    - Multiple Q&A (returns JSON array of strings)
-    - Graph/network problems (edges.csv)
-    - Wikipedia scraping
-    - DuckDB queries
-    - Generic CSV analytics
-    """
+    # --- Basic stats ---
+    numeric_cols = df.select_dtypes(include="number").columns.tolist()
+    cat_cols = df.select_dtypes(exclude="number").columns.tolist()
 
-    # Try to load any attached CSVs into pandas
-    dfs = {}
-    for f in files:
-        try:
-            df = pd.read_csv(f.file)
-            dfs[f.filename] = df
-        except Exception:
-            pass
+    if len(numeric_cols) > 0:
+        for col in numeric_cols:
+            results[f"{col}_sum"] = df[col].sum()
+            results[f"{col}_mean"] = float(df[col].mean())
+            results[f"{col}_median"] = float(df[col].median())
+            results[f"{col}_min"] = float(df[col].min())
+            results[f"{col}_max"] = float(df[col].max())
 
-    q_lower = question.lower()
+        # Correlation matrix (store only top correlations to save space)
+        corr = df[numeric_cols].corr().to_dict()
+        results["correlations"] = corr
 
-    # === 1. Multi-question prompts ("respond with a JSON array of strings") ===
-    if "json array of strings" in q_lower:
-        return call_llm_for_answer("", question, force_array=True)
+        # Histogram of first numeric column
+        plt.hist(df[numeric_cols[0]], bins=10, color="blue")
+        plt.title(f"Histogram of {numeric_cols[0]}")
+        results["histogram_chart"] = encode_chart()
 
-    # === 2. Graph/network tasks (edges.csv) ===
-    if "shortest_path" in q_lower or "edge_count" in q_lower or "degree" in q_lower:
-        if not dfs:
-            return {"error": "No CSV provided for graph analysis"}
-        df = list(dfs.values())[0]
-        G = nx.from_pandas_edgelist(df, df.columns[0], df.columns[1])
+    if len(cat_cols) > 0:
+        for col in cat_cols:
+            top_val = df[col].mode()[0] if not df[col].mode().empty else None
+            results[f"{col}_mode"] = str(top_val)
+            freq = df[col].value_counts().to_dict()
+            results[f"{col}_frequencies"] = freq
 
-        edge_count = G.number_of_edges()
-        degree_dict = dict(G.degree())
-        highest_degree_node = max(degree_dict, key=degree_dict.get)
-        avg_degree = sum(degree_dict.values()) / len(degree_dict)
-        density = nx.density(G)
-        try:
-            shortest_path = nx.shortest_path(G, source="Alice", target="Eve")
-        except Exception:
-            shortest_path = []
+        # If categorical + numeric → bar chart
+        if numeric_cols:
+            plt.bar(df[cat_cols[0]], df[numeric_cols[0]], color="green")
+            plt.xticks(rotation=45)
+            plt.title(f"{numeric_cols[0]} by {cat_cols[0]}")
+            results["bar_chart"] = encode_chart()
 
-        fig1, ax1 = plt.subplots()
-        nx.draw_networkx(G, ax=ax1, with_labels=True, node_color="skyblue", edge_color="gray")
-        network_graph = encode_plot(fig1)
+    # --- Try to detect date/time for line chart ---
+    date_cols = [c for c in df.columns if "date" in c.lower() or "time" in c.lower()]
+    if date_cols and numeric_cols:
+        df[date_cols[0]] = pd.to_datetime(df[date_cols[0]], errors="coerce")
+        df_sorted = df.dropna(subset=[date_cols[0]]).sort_values(by=date_cols[0])
+        if not df_sorted.empty:
+            plt.plot(df_sorted[date_cols[0]], df_sorted[numeric_cols[0]], color="red")
+            plt.title(f"{numeric_cols[0]} over {date_cols[0]}")
+            results["line_chart"] = encode_chart()
 
-        fig2, ax2 = plt.subplots()
-        degrees = list(degree_dict.values())
-        ax2.hist(degrees, bins=range(1, max(degrees) + 2))
-        ax2.set_xlabel("Degree")
-        ax2.set_ylabel("Frequency")
-        degree_histogram = encode_plot(fig2)
-
-        return {
-            "edge_count": edge_count,
-            "highest_degree_node": highest_degree_node,
-            "average_degree": avg_degree,
-            "density": density,
-            "shortest_path_alice_eve": shortest_path,
-            "network_graph": network_graph,
-            "degree_histogram": degree_histogram
-        }
-
-    # === 3. Wikipedia scraping tasks ===
-    if "wikipedia" in q_lower:
-        url = next((t for t in question.split() if t.startswith("http")), None)
-        if not url:
-            return {"error": "No URL found in question"}
-        html = requests.get(url).text
-        soup = BeautifulSoup(html, "html.parser")
-        table = soup.find("table", {"class": "wikitable"})
-        df = pd.read_html(str(table))[0]
-        description = f"Data columns: {df.columns.tolist()} sample: {df.head(3).to_dict()}"
-        return call_llm_for_answer(description, question)
-
-    # === 4. DuckDB queries ===
-    if "duckdb" in q_lower or "parquet" in q_lower:
-        return call_llm_for_answer("", question)
-
-    # === 5. Generic CSV analysis ===
-    if dfs:
-        description_parts = [
-            f"File: {name}\nColumns: {list(df.columns)}\nSample:\n{df.head(3).to_dict()}"
-            for name, df in dfs.items()
-        ]
-        return call_llm_for_answer("\n".join(description_parts), question)
-
-    # === 6. Fallback (no files, pure text Q) ===
-    return call_llm_for_answer("", question)
-
-
-def call_llm_for_answer(data_description, question, force_array=False):
-    if force_array:
-        prompt = f"""
-You are a data analyst. You have the following data:
-{data_description}
-
-Question:
-{question}
-
-Return ONLY a valid JSON array of strings.
-Example: ["answer1", "answer2", "answer3"]
-"""
-    else:
-        prompt = f"""
-You are a data analyst. You have the following data:
-{data_description}
-
-Question:
-{question}
-
-Return ONLY valid JSON matching exactly the keys, structure, and format requested in the question.
-Do not include explanations or extra fields.
-"""
-
-    if NEW_OPENAI:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        raw_output = response.choices[0].message.content
-    else:
-        response = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        raw_output = response.choices[0].message["content"]
-
-    # --- CLEANUP: strip Markdown fences if present ---
-    cleaned = raw_output.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")  # remove leading/trailing ```
-        # remove possible "json\n" or "JSON\n"
-        if cleaned.lower().startswith("json"):
-            cleaned = cleaned[4:].strip()
-    if cleaned.endswith("```"):
-        cleaned = cleaned[:-3].strip()
-
+    # --- LLM reasoning for custom Q&A ---
     try:
-        return json.loads(cleaned)
-    except Exception:
-        return {"error": "Invalid JSON from model", "raw_output": raw_output}
+        summary = df.describe(include="all").to_string()
+        prompt = f"""
+You are a data analyst.
+Dataset summary:
+{summary}
+
+Questions:
+{questions}
+
+Answer clearly in JSON format.
+"""
+        resp = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[{"role": "system", "content": "You are a data analyst."},
+                      {"role": "user", "content": prompt}],
+            temperature=0
+        )
+        llm_ans = resp.choices[0].message.content
+        results["llm_answers"] = llm_ans
+    except Exception as e:
+        results["llm_error"] = str(e)
+
+    return results
