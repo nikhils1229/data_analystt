@@ -16,20 +16,16 @@ app = FastAPI()
 
 @app.post("/api/")
 async def analyze(
-    questions: UploadFile = File(..., alias="questions.txt"),
-    data: UploadFile = File(..., alias="data.csv"),
+    questions_txt: UploadFile = File(..., alias="questions.txt"),
+    data_csv: UploadFile = File(..., alias="data.csv"),
 ):
     # Read uploaded files
-    questions_text = (await questions.read()).decode("utf-8")
-    file_contents = (await data.read()).decode("utf-8")
+    questions_text = (await questions_txt.read()).decode("utf-8")
+    file_contents = (await data_csv.read()).decode("utf-8")
 
-    # Call processor
-    try:
-        result = process(questions_text, file_contents)
-    except Exception as e:
-        return {"error": str(e)}
-
+    result = process(questions_text, file_contents)
     return result
+
 
 
 if __name__ == "__main__":
