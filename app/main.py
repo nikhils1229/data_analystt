@@ -6,10 +6,10 @@ import sys
 # --- Import processor safely ---
 try:
     # Case 1: Running as package
-    from .processor import process
+    from .processor import process_question
 except ImportError:
     # Case 2: Running as plain script
-    from processor import process
+    from .processor import process_question
 
 app = FastAPI()
 
