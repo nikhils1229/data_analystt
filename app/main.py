@@ -2,7 +2,7 @@ from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
 import uvicorn
 from typing import List, Optional
-from .processor import process
+from . import processor
 
 app = FastAPI()
 
