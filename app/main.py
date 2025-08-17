@@ -1,27 +1,33 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
-from typing import List
-from .processor import process_question
 import uvicorn
+from typing import List, Optional
+import processor
 
 app = FastAPI()
 
 @app.post("/api/")
 async def analyze(
-    questions_txt: UploadFile = File(..., alias="questions.txt"),   # match grader field
-    files: List[UploadFile] = File(default=[])
+    questions: UploadFile = File(..., alias="questions.txt"),   # required
+    files: Optional[List[UploadFile]] = File(None)              # optional
 ):
     try:
-        # Read the natural language question(s) from questions.txt
-        question_text = (await questions_txt.read()).decode("utf-8")
+        # Read questions
+        questions_text = (await questions.read()).decode("utf-8")
 
-        # Pass question + any attached files (CSV, etc.)
-        result = process_question(question_text, files)
+        # Read any uploaded files (CSV, etc.)
+        file_contents = {}
+        if files:
+            for f in files:
+                file_contents[f.filename] = await f.read()
+
+        # Call processor
+        result = processor.process(questions_text, file_contents)
+
         return JSONResponse(content=result)
-
     except Exception as e:
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+        return JSONResponse(content={"error": str(e)}, status_code=400)
 
 
 if __name__ == "__main__":
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
