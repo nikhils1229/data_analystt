@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
-from processor import process_question
+from .processor import process_question
 import uvicorn
 
 app = FastAPI()
